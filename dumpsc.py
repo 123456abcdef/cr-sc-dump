@@ -15,22 +15,26 @@ Will extract all png files in output_dir.
 
 def convert_pixel(pixel, type):
     if type == 0:
+        # RGB8888
         return struct.unpack('4B', pixel)
     elif type == 2:
+        # RGB4444
         pixel, = struct.unpack('<H', pixel)
         return (((pixel >> 12) & 0xF) << 4, ((pixel >> 8) & 0xF) << 4,
                 ((pixel >> 4) & 0xF) << 4, ((pixel >> 0) & 0xF) << 4)
     elif type == 4:
+        # RGB565
         pixel, = struct.unpack("<H", pixel)
         return (((pixel >> 11) & 0x1F) << 3, ((pixel >> 5) & 0x3F) << 2, (pixel & 0x1F) << 3)
     elif type == 6:
+        # RGB555
         pixel, = struct.unpack("<H", pixel)
         return ((pixel >> 16) & 0x80, (pixel >> 9) & 0x7C,
                 (pixel >> 6) & 0x3E, (pixel >> 3) & 0x1F)
     elif type == 10:
+        # BGR233?
         pixel, = struct.unpack("<B", pixel)
-        # TODO still red instead of blue
-        return ((pixel >> 5) & 0x7) << 5, ((pixel >> 2) & 0x7) << 2, ((pixel) & 0x3)
+        return ((pixel) & 0x3, ((pixel >> 2) & 0x7) << 2, ((pixel >> 5) & 0x7) << 5)
     else:
         raise Exception("Unknown pixel type {}.".format(type))
 
@@ -69,8 +73,7 @@ def process_sc(baseName, data, path):
         pixels = []
         for y in range(height):
             for x in range(width):
-                pixels.append(convert_pixel(
-                    decompressed[i:i + pixelSize], subType))
+                pixels.append(convert_pixel(decompressed[i:i + pixelSize], subType))
                 i += pixelSize
 
         img.putdata(pixels)
