@@ -25,16 +25,14 @@ def convert_pixel(pixel, type):
         return (((pixel >> 11) & 0x1F) << 3, ((pixel >> 5) & 0x3F) << 2, (pixel & 0x1F) << 3)
     elif type == 6:
         pixel, = struct.unpack("<H", pixel)
-        # TODO figure out correct colors
-        return (((pixel >> 12) & 0xF) << 4, ((pixel >> 8) & 0xF) << 4,
-                ((pixel >> 4) & 0xF) << 4, ((pixel >> 0) & 0xF) << 4)
+        return ((pixel >> 16) & 0x80, (pixel >> 9) & 0x7C,
+                (pixel >> 6) & 0x3E, (pixel >> 3) & 0x1F)
     elif type == 10:
         pixel, = struct.unpack("<B", pixel)
-        # TODO figure out correct colors
-        return (((pixel >> 12) & 0xF) << 4, ((pixel >> 8) & 0xF) << 4,
-                ((pixel >> 4) & 0xF) << 4, ((pixel >> 0) & 0xF) << 4)
+        # TODO still red instead of blue
+        return ((pixel >> 5) & 0x7) << 5, ((pixel >> 2) & 0x7) << 2, ((pixel) & 0x3)
     else:
-        raise Exception("Unknown pixel type {}".format(type))
+        raise Exception("Unknown pixel type {}.".format(type))
 
 
 def process_sc(baseName, data, path):
@@ -59,7 +57,7 @@ def process_sc(baseName, data, path):
         elif subType == 10:
             pixelSize = 1
         else:
-            raise Exception("Unknown pixel type {}".format(subType))
+            raise Exception("Unknown pixel type {}.".format(subType))
 
         print('fileType: {}, fileSize: {}, subType: {}, width: {}, height: {}'.format(fileType,
                                                                                       fileSize,
@@ -88,7 +86,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.o:
-        path = args.o
+        path = args.o + '/'
     else:
         path = os.path.dirname(os.path.realpath(__file__)) + '/'
 
