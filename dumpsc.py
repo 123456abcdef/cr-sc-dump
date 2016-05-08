@@ -7,7 +7,7 @@ from PIL import Image
 """
 Tool for extracting Clash Royale "*_tex.sc" files
 
-find ./assets/sc -name *_tex.sc | xargs python dump.sc -o output_dir/
+find ./assets/sc -name *_tex.sc | xargs python dumpsc.py -o output_dir/
 
 Will extract all png files in output_dir.
 """
