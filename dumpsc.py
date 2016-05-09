@@ -9,7 +9,7 @@ Tool for extracting Clash Royale "*_tex.sc" files
 
 find ./assets/sc -name *_tex.sc | xargs python dumpsc.py -o output_dir/
 
-Will extract all png files in output_dir.
+Will save all png files in output_dir.
 """
 
 
@@ -27,7 +27,7 @@ def convert_pixel(pixel, type):
         pixel, = struct.unpack("<H", pixel)
         return (((pixel >> 11) & 0x1F) << 3, ((pixel >> 5) & 0x3F) << 2, (pixel & 0x1F) << 3)
     elif type == 6:
-        # RGB555
+        # RGB555?
         pixel, = struct.unpack("<H", pixel)
         return ((pixel >> 16) & 0x80, (pixel >> 9) & 0x7C,
                 (pixel >> 6) & 0x3E, (pixel >> 3) & 0x1F)
@@ -63,11 +63,8 @@ def process_sc(baseName, data, path):
         else:
             raise Exception("Unknown pixel type {}.".format(subType))
 
-        print('fileType: {}, fileSize: {}, subType: {}, width: {}, height: {}'.format(fileType,
-                                                                                      fileSize,
-                                                                                      subType,
-                                                                                      width,
-                                                                                      height))
+        print('fileType: {}, fileSize: {}, subType: {}, width: {}, '
+              'height: {}'.format(fileType, fileSize, subType, width, height))
 
         img = Image.new("RGBA", (width, height))
         pixels = []
@@ -94,10 +91,10 @@ if __name__ == "__main__":
         path = os.path.dirname(os.path.realpath(__file__)) + '/'
 
     for file in args.files:
-        print file
         if file.endswith('_tex.sc'):
             baseName, ext = os.path.splitext(os.path.basename(file))
             with open(file, 'rb') as f:
+                print('{}'.format(f.name))
                 data = f.read()
                 process_sc(baseName, data[26:], path)
         else:
