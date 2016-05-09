@@ -3,9 +3,9 @@ Python script to extract textures from Clash Royale's `*_tex.sc` files.
 
 ## Installation
 1. Install Python 2.7
-2. Install `lzma` with:
+2. Install `pyliblzma` with:
 
-         python -m pip install lzma
+         python -m pip install pyliblzma
 3. Install `Pillow` with:
 
          python -m pip install Pillow
