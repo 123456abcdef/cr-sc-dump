@@ -2,12 +2,20 @@ import argparse
 import os
 import struct
 import lzma
+import math
 from PIL import Image
 
 """
 Tool for extracting Clash Royale "*_tex.sc" files
 
+Download .apk from the net and extract with 7zip.
+
+linux:
 find ./assets/sc -name *_tex.sc | xargs python dumpsc.py -o output_dir/
+
+windows:
+for %v in (*tex.sc) do dumpsc.py %v
+
 
 Will save all png files in output_dir.
 """
@@ -41,19 +49,19 @@ def convert_pixel(pixel, type):
 
 def process_sc(baseName, data, path):
     # Fix header and decompress
-    data = data[0:9] + ('\x00' * 4) + data[9:]
+    data = data[0:9] + (b'\x00' * 4) + data[9:]
     decompressed = lzma.LZMADecompressor().decompress(data)
+
 
     i = 0
     picCount = 0
-    while len(decompressed[i:]) > 5:
-        fileType, = struct.unpack('<b', decompressed[i])
-        fileSize, = struct.unpack('<I', decompressed[i + 1:i + 5])
-        subType, = struct.unpack('<b', decompressed[i + 5])
-        width, = struct.unpack('<H', decompressed[i + 6:i + 8])
-        height, = struct.unpack('<H', decompressed[i + 8:i + 10])
+    while len(decompressed[i:]) > 5:        
+        fileType, = struct.unpack('<b', bytes(chr(decompressed[i]), 'ascii'))
+        fileSize, = struct.unpack('<I', bytes(decompressed[i + 1:i + 5]))		
+        subType, = struct.unpack('<b', bytes(chr(decompressed[i + 5]), 'ascii'))
+        width, = struct.unpack('<H', bytes(decompressed[i + 6:i + 8]))
+        height, = struct.unpack('<H', bytes(decompressed[i + 8:i + 10]))
         i += 10
-
         if subType == 0:
             pixelSize = 4
         elif subType == 2 or subType == 4 or subType == 6:
@@ -72,10 +80,36 @@ def process_sc(baseName, data, path):
             for x in range(width):
                 pixels.append(convert_pixel(decompressed[i:i + pixelSize], subType))
                 i += pixelSize
-
         img.putdata(pixels)
-        img.save(path + baseName + ('_' * picCount) + '.png', 'PNG')
+        if fileType == 28 or fileType == 27:
+            imgl = img.load()
+            iSrcPix = 0
+            for l in range(math.floor(height/32)): #block of 32 lines
+                #normal 32-pixels blocks
+                for k in range(math.floor(width/32)): #32-pixels blocks in a line
+                    for j in range(32): #line in a multi line block
+                        for h in range(32): #pixels in a block
+                            imgl[(h+ (k * 32)),  (j + (l * 32))] = pixels[iSrcPix]
+                            iSrcPix+=1
+                #line end blocks
+                for j in range(32):
+                    for h in range(width % 32):
+                        imgl[(h + (width - (width % 32))), (j + (l * 32))] = pixels[iSrcPix]
+                        iSrcPix+=1
+            #final lines
+            for k in range(math.floor(width/32)): #32-pixels blocks in a line
+                for j in range((height % 32)): #line in a multi line block
+                    for h in range(32): #pixels in a 32-pixels-block
+                        imgl[(h + (k * 32)),  (j + (height - (height % 32)))] = pixels[iSrcPix]
+                        iSrcPix+=1
+            #line end blocks
+            for j in range(height % 32):
+                for h in range(width % 32):
+                    imgl[(h + (width - (width % 32))), (j + (height - (height % 32)))] = pixels[iSrcPix]
+                    iSrcPix+=1
+            #img.save(path + baseName + ('_' * picCount) + '.png', 'PNG')
 
+        img.save(path + baseName + ('_' * picCount) + '.png', 'PNG')
         picCount += 1
 
 if __name__ == "__main__":
@@ -99,3 +133,4 @@ if __name__ == "__main__":
                 process_sc(baseName, data[26:], path)
         else:
             print('{} not supported.'.format(file))
+
