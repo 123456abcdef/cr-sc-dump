@@ -2,7 +2,6 @@ import argparse
 import os
 import struct
 import lzma
-import math
 from PIL import Image
 
 """
@@ -10,14 +9,13 @@ Tool for extracting Clash Royale "*_tex.sc" files
 
 Download .apk from the net and extract with 7zip.
 
-linux:
-find ./assets/sc -name *_tex.sc | xargs python dumpsc.py -o output_dir/
+Linux / Mac:
+find ./assets/sc -name *_tex.sc | xargs python dumpsc.py
 
-windows:
+Windows:
 for %v in (*tex.sc) do dumpsc.py %v
 
-
-Will save all png files in output_dir.
+Will save all png files.
 """
 
 
@@ -52,15 +50,14 @@ def process_sc(baseName, data, path):
     data = data[0:9] + (b'\x00' * 4) + data[9:]
     decompressed = lzma.LZMADecompressor().decompress(data)
 
-
     i = 0
     picCount = 0
-    while len(decompressed[i:]) > 5:        
-        fileType, = struct.unpack('<b', bytes(chr(decompressed[i]), 'ascii'))
-        fileSize, = struct.unpack('<I', bytes(decompressed[i + 1:i + 5]))		
-        subType, = struct.unpack('<b', bytes(chr(decompressed[i + 5]), 'ascii'))
-        width, = struct.unpack('<H', bytes(decompressed[i + 6:i + 8]))
-        height, = struct.unpack('<H', bytes(decompressed[i + 8:i + 10]))
+    while len(decompressed[i:]) > 5:
+        fileType, = struct.unpack('<b', decompressed[i])
+        fileSize, = struct.unpack('<I', decompressed[i + 1:i + 5])
+        subType, = struct.unpack('<b', decompressed[i + 5])
+        width, = struct.unpack('<H', decompressed[i + 6:i + 8])
+        height, = struct.unpack('<H', decompressed[i + 8:i + 10])
         i += 10
         if subType == 0:
             pixelSize = 4
@@ -84,43 +81,41 @@ def process_sc(baseName, data, path):
         if fileType == 28 or fileType == 27:
             imgl = img.load()
             iSrcPix = 0
-            for l in range(math.floor(height/32)): #block of 32 lines
-                #normal 32-pixels blocks
-                for k in range(math.floor(width/32)): #32-pixels blocks in a line
-                    for j in range(32): #line in a multi line block
-                        for h in range(32): #pixels in a block
-                            imgl[(h+ (k * 32)),  (j + (l * 32))] = pixels[iSrcPix]
-                            iSrcPix+=1
-                #line end blocks
+            for l in range(height / 32):  # block of 32 lines
+                # normal 32-pixels blocks
+                for k in range(width / 32):  # 32-pixels blocks in a line
+                    for j in range(32):  # line in a multi line block
+                        for h in range(32):  # pixels in a block
+                            imgl[h + (k * 32), j + (l * 32)] = pixels[iSrcPix]
+                            iSrcPix += 1
+                # line end blocks
                 for j in range(32):
                     for h in range(width % 32):
-                        imgl[(h + (width - (width % 32))), (j + (l * 32))] = pixels[iSrcPix]
-                        iSrcPix+=1
-            #final lines
-            for k in range(math.floor(width/32)): #32-pixels blocks in a line
-                for j in range((height % 32)): #line in a multi line block
-                    for h in range(32): #pixels in a 32-pixels-block
-                        imgl[(h + (k * 32)),  (j + (height - (height % 32)))] = pixels[iSrcPix]
-                        iSrcPix+=1
-            #line end blocks
+                        imgl[h + (width - (width % 32)), j + (l * 32)] = pixels[iSrcPix]
+                        iSrcPix += 1
+            # final lines
+            for k in range(width / 32):  # 32-pixels blocks in a line
+                for j in range(height % 32):  # line in a multi line block
+                    for h in range(32):  # pixels in a 32-pixels-block
+                        imgl[h + (k * 32), j + (height - (height % 32))] = pixels[iSrcPix]
+                        iSrcPix += 1
+            # line end blocks
             for j in range(height % 32):
                 for h in range(width % 32):
-                    imgl[(h + (width - (width % 32))), (j + (height - (height % 32)))] = pixels[iSrcPix]
-                    iSrcPix+=1
-            #img.save(path + baseName + ('_' * picCount) + '.png', 'PNG')
+                    imgl[h + (width - (width % 32)), j + (height - (height % 32))] = pixels[iSrcPix]
+                    iSrcPix += 1
 
         img.save(path + baseName + ('_' * picCount) + '.png', 'PNG')
         picCount += 1
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description='Extract png files from Clash Royale "*_tex.sc" files')
+    parser = argparse.ArgumentParser(description='Extract png files from Clash Royale "*_tex.sc" files')
     parser.add_argument('files', help='sc file', nargs='+')
     parser.add_argument('-o', help='Extract pngs to directory', type=str)
     args = parser.parse_args()
 
     if args.o:
-        path = args.o + '/'
+        path = os.path.normpath(args.o) + '/'
     else:
         path = os.path.dirname(os.path.realpath(__file__)) + '/'
 
@@ -133,4 +128,3 @@ if __name__ == "__main__":
                 process_sc(baseName, data[26:], path)
         else:
             print('{} not supported.'.format(file))
-
