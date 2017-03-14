@@ -2,6 +2,7 @@ import argparse
 import os
 import struct
 import lzma
+from math import floor
 from PIL import Image
 
 """
@@ -53,9 +54,9 @@ def process_sc(baseName, data, path):
     i = 0
     picCount = 0
     while len(decompressed[i:]) > 5:
-        fileType, = struct.unpack('<b', decompressed[i])
+        fileType, = struct.unpack('<b', bytes([decompressed[i]]))
         fileSize, = struct.unpack('<I', decompressed[i + 1:i + 5])
-        subType, = struct.unpack('<b', decompressed[i + 5])
+        subType, = struct.unpack('<b', bytes([decompressed[i + 5]]))
         width, = struct.unpack('<H', decompressed[i + 6:i + 8])
         height, = struct.unpack('<H', decompressed[i + 8:i + 10])
         i += 10
@@ -81,9 +82,9 @@ def process_sc(baseName, data, path):
         if fileType == 28 or fileType == 27:
             imgl = img.load()
             iSrcPix = 0
-            for l in range(height / 32):  # block of 32 lines
+            for l in range(floor(height / 32)):  # block of 32 lines
                 # normal 32-pixels blocks
-                for k in range(width / 32):  # 32-pixels blocks in a line
+                for k in range(floor(width / 32)):  # 32-pixels blocks in a line
                     for j in range(32):  # line in a multi line block
                         for h in range(32):  # pixels in a block
                             imgl[h + (k * 32), j + (l * 32)] = pixels[iSrcPix]
@@ -94,7 +95,7 @@ def process_sc(baseName, data, path):
                         imgl[h + (width - (width % 32)), j + (l * 32)] = pixels[iSrcPix]
                         iSrcPix += 1
             # final lines
-            for k in range(width / 32):  # 32-pixels blocks in a line
+            for k in range(floor(width / 32)):  # 32-pixels blocks in a line
                 for j in range(height % 32):  # line in a multi line block
                     for h in range(32):  # pixels in a 32-pixels-block
                         imgl[h + (k * 32), j + (height - (height % 32))] = pixels[iSrcPix]
