@@ -2,7 +2,6 @@ import argparse
 import os
 import struct
 import lzma
-from math import floor
 from PIL import Image
 
 """
@@ -11,7 +10,7 @@ Tool for extracting Clash Royale "*_tex.sc" files
 Download .apk from the net and extract with 7zip.
 
 Linux / Mac:
-find ./assets/sc -name *_tex.sc | xargs python dumpsc.py
+find ./assets/sc -name "*_tex.sc" | xargs python dumpsc.py
 
 Windows:
 for %v in (*tex.sc) do dumpsc.py %v
@@ -21,27 +20,21 @@ Will save all png files.
 
 
 def convert_pixel(pixel, type):
-    if type == 0:
-        # RGB8888
+    if type == 0:  # RGB8888
         return struct.unpack('4B', pixel)
-    elif type == 2:
-        # RGB4444
+    elif type == 2:  # RGB4444
         pixel, = struct.unpack('<H', pixel)
         return (((pixel >> 12) & 0xF) << 4, ((pixel >> 8) & 0xF) << 4,
                 ((pixel >> 4) & 0xF) << 4, ((pixel >> 0) & 0xF) << 4)
-    elif type == 4:
-        # RGB565
+    elif type == 4:  # RGB565
         pixel, = struct.unpack("<H", pixel)
         return (((pixel >> 11) & 0x1F) << 3, ((pixel >> 5) & 0x3F) << 2, (pixel & 0x1F) << 3)
-    elif type == 6:
-        # RGB555?
+    elif type == 6:  # LA88
         pixel, = struct.unpack("<H", pixel)
-        return ((pixel >> 16) & 0x80, (pixel >> 9) & 0x7C,
-                (pixel >> 6) & 0x3E, (pixel >> 3) & 0x1F)
-    elif type == 10:
-        # BGR233?
+        return ((pixel >> 8), (pixel >> 8), (pixel >> 8), (pixel & 0xFF))
+    elif type == 10:  # L8
         pixel, = struct.unpack("<B", pixel)
-        return ((pixel) & 0x3, ((pixel >> 2) & 0x7) << 2, ((pixel >> 5) & 0x7) << 5)
+        return (pixel, pixel, pixel)
     else:
         raise Exception("Unknown pixel type {}.".format(type))
 
@@ -79,12 +72,13 @@ def process_sc(baseName, data, path):
                 pixels.append(convert_pixel(decompressed[i:i + pixelSize], subType))
                 i += pixelSize
         img.putdata(pixels)
+
         if fileType == 28 or fileType == 27:
             imgl = img.load()
             iSrcPix = 0
-            for l in range(floor(height / 32)):  # block of 32 lines
+            for l in range(height // 32):  # block of 32 lines
                 # normal 32-pixels blocks
-                for k in range(floor(width / 32)):  # 32-pixels blocks in a line
+                for k in range(width // 32):  # 32-pixels blocks in a line
                     for j in range(32):  # line in a multi line block
                         for h in range(32):  # pixels in a block
                             imgl[h + (k * 32), j + (l * 32)] = pixels[iSrcPix]
@@ -95,7 +89,7 @@ def process_sc(baseName, data, path):
                         imgl[h + (width - (width % 32)), j + (l * 32)] = pixels[iSrcPix]
                         iSrcPix += 1
             # final lines
-            for k in range(floor(width / 32)):  # 32-pixels blocks in a line
+            for k in range(width // 32):  # 32-pixels blocks in a line
                 for j in range(height % 32):  # line in a multi line block
                     for h in range(32):  # pixels in a 32-pixels-block
                         imgl[h + (k * 32), j + (height - (height % 32))] = pixels[iSrcPix]
