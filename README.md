@@ -16,6 +16,10 @@ Or on all files with:
 
       find . -name "*_tex.sc" | xargs python dumpsc.py
 
+## Misc
+If you want to extract the content of `*.sc`files, try [sc_decode](https://github.com/Galaxy1036/sc_decode).
+
+For `*_dl.sc`files, try [Old-Sc-Dumper](https://github.com/Galaxy1036/Old-Sc-Dumper).
 
 ##### Credits
 * athlan20
