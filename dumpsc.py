@@ -1,125 +1,190 @@
 import argparse
-import os
-import struct
+import hashlib
+import io
 import lzma
+from math import ceil
+import os
+
 from PIL import Image
 
 """
-Tool for extracting Clash Royale "*_tex.sc" files
+Tool for extracting Clash Royale "*.sc" files
 
 Download .apk from the net and extract with 7zip.
 
 Linux / Mac:
-find ./assets/sc -name "*_tex.sc" | xargs python dumpsc.py
+find ./assets/sc -name "*.sc" | xargs python dumpsc.py
 
 Windows:
-for %v in (*tex.sc) do dumpsc.py %v
+for %v in (*.sc) do dumpsc.py %v
 
 Will save all png files.
 """
 
 
-def convert_pixel(pixel, type):
-    if type == 0:  # RGB8888
-        return struct.unpack('4B', pixel)
-    elif type == 2:  # RGB4444
-        pixel, = struct.unpack('<H', pixel)
-        return (((pixel >> 12) & 0xF) << 4, ((pixel >> 8) & 0xF) << 4,
-                ((pixel >> 4) & 0xF) << 4, ((pixel >> 0) & 0xF) << 4)
-    elif type == 4:  # RGB565
-        pixel, = struct.unpack("<H", pixel)
-        return (((pixel >> 11) & 0x1F) << 3, ((pixel >> 5) & 0x3F) << 2, (pixel & 0x1F) << 3)
-    elif type == 6:  # LA88
-        pixel, = struct.unpack("<H", pixel)
-        return ((pixel >> 8), (pixel >> 8), (pixel >> 8), (pixel & 0xFF))
-    elif type == 10:  # L8
-        pixel, = struct.unpack("<B", pixel)
-        return (pixel, pixel, pixel)
-    else:
-        raise Exception("Unknown pixel type {}.".format(type))
+class Reader(io.BytesIO):
+    def __init__(self, stream):
+        super().__init__(stream)
+        self._bytesLeft = len(stream)
+
+    def __len__(self):
+        return 0 if self._bytesLeft < 0 else self._bytesLeft
+
+    def read(self, size):
+        self._bytesLeft -= size
+        return super().read(size)
+
+    def read_byte(self):
+        self._bytesLeft -= 1
+        return int.from_bytes(self.read(1), 'little')
+
+    def read_uint16(self):
+        self._bytesLeft -= 2
+        return int.from_bytes(self.read(2), 'little')
+
+    def read_uint32(self):
+        self._bytesLeft -= 4
+        return int.from_bytes(self.read(4), 'little')
+
+    def read_string(self):
+        length = self.read_byte()
+        self._bytesLeft -= 1 + length
+        return self.read(length).decode('utf-8')
 
 
-def process_sc(baseName, data, path):
+def decompress(data):
     # Fix header and decompress
     data = data[0:9] + (b'\x00' * 4) + data[9:]
-    decompressed = lzma.LZMADecompressor().decompress(data)
+    return lzma.LZMADecompressor().decompress(data)
 
-    i = 0
+
+def process_csv(fileName, data, path):
+    decompressed = decompress(data)
+
+    with open(os.path.join(path, fileName), 'wb') as f:
+        f.write(decompressed)
+
+
+def convert_pixel(reader, type):
+    if type == 0 or type == 1:  # RGB8888
+        pixel = reader.read(4)
+        return (int(pixel[0]), int(pixel[1]), int(pixel[2]), int(pixel[3]))
+    elif type == 2:  # RGB4444
+        pixel = reader.read_uint16()
+        return (((pixel >> 12) & 0xF) << 4, ((pixel >> 8) & 0xF) << 4,
+                ((pixel >> 4) & 0xF) << 4, ((pixel >> 0) & 0xF) << 4)
+    elif type == 3:  # RBGA5551
+        pixel = reader.read_uint16()
+        return (((pixel >> 11) & 0x1F) << 3, ((pixel >> 6) & 0x1F) << 3,
+                ((pixel >> 1) & 0x1F) << 3, ((pixel) & 0xFF) << 7)
+    elif type == 4:  # RGB565
+        pixel = reader.read_uint16()
+        return (((pixel >> 11) & 0x1F) << 3, ((pixel >> 5) & 0x3F) << 2,
+                (pixel & 0x1F) << 3)
+    elif type == 6:  # LA88
+        pixel = reader.read_uint16()
+        return ((pixel >> 8), (pixel >> 8), (pixel >> 8), (pixel & 0xFF))
+    elif type == 10:  # L8
+        pixel = reader.read_byte()
+        return (pixel, pixel, pixel)
+    else:
+        raise Exception('Unknown pixel type \'{}\''.format(type))
+
+
+def process_sc(baseName, data, path, old):
+    decompressed = decompress(data[26:])
+
+    md5_hash = data[10:26]
+    if hashlib.md5(decompressed).digest() != md5_hash:
+        raise Exception('File seems corrupted')
+
+    reader = Reader(decompressed)
+
+    if old:
+        # Credits: https://github.com/Galaxy1036/Old-Sc-Dumper
+        reader.read(17)
+        count = reader.read_uint16()
+        reader.read(count * 2)
+        for i in range(count):  # skip strings
+            reader.read_string()
+
     picCount = 0
-    while len(decompressed[i:]) > 5:
-        fileType, = struct.unpack('<b', bytes([decompressed[i]]))
-        fileSize, = struct.unpack('<I', decompressed[i + 1:i + 5])
-        subType, = struct.unpack('<b', bytes([decompressed[i + 5]]))
-        width, = struct.unpack('<H', decompressed[i + 6:i + 8])
-        height, = struct.unpack('<H', decompressed[i + 8:i + 10])
-        i += 10
-        if subType == 0:
-            pixelSize = 4
-        elif subType == 2 or subType == 4 or subType == 6:
-            pixelSize = 2
-        elif subType == 10:
-            pixelSize = 1
-        else:
-            raise Exception("Unknown pixel type {}.".format(subType))
+    while len(reader):
+        fileType = reader.read_byte()
+        fileSize = reader.read_uint32()
+
+        if fileType not in [1, 24, 27, 28]:
+            reader.read(fileSize)
+            continue
+
+        subType = reader.read_byte()
+        width = reader.read_uint16()
+        height = reader.read_uint16()
 
         print('fileType: {}, fileSize: {}, subType: {}, width: {}, '
               'height: {}'.format(fileType, fileSize, subType, width, height))
 
-        img = Image.new("RGBA", (width, height))
         pixels = []
         for y in range(height):
             for x in range(width):
-                pixels.append(convert_pixel(decompressed[i:i + pixelSize], subType))
-                i += pixelSize
+                pixels.append(convert_pixel(reader, subType))
+
+        img = Image.new('RGBA', (width, height))
         img.putdata(pixels)
 
-        if fileType == 28 or fileType == 27:
-            imgl = img.load()
-            iSrcPix = 0
-            for l in range(height // 32):  # block of 32 lines
-                # normal 32-pixels blocks
-                for k in range(width // 32):  # 32-pixels blocks in a line
-                    for j in range(32):  # line in a multi line block
-                        for h in range(32):  # pixels in a block
-                            imgl[h + (k * 32), j + (l * 32)] = pixels[iSrcPix]
-                            iSrcPix += 1
-                # line end blocks
-                for j in range(32):
-                    for h in range(width % 32):
-                        imgl[h + (width - (width % 32)), j + (l * 32)] = pixels[iSrcPix]
-                        iSrcPix += 1
-            # final lines
-            for k in range(width // 32):  # 32-pixels blocks in a line
-                for j in range(height % 32):  # line in a multi line block
-                    for h in range(32):  # pixels in a 32-pixels-block
-                        imgl[h + (k * 32), j + (height - (height % 32))] = pixels[iSrcPix]
-                        iSrcPix += 1
-            # line end blocks
-            for j in range(height % 32):
-                for h in range(width % 32):
-                    imgl[h + (width - (width % 32)), j + (height - (height % 32))] = pixels[iSrcPix]
-                    iSrcPix += 1
+        if fileType == 27 or fileType == 28:
+            pixelAccess = img.load()
+            i = 0
+            blockSize = 32
+            for _h in range(ceil(height / blockSize)):
+                for _w in range(ceil(width / blockSize)):
+                    h = (_h * blockSize)
+                    while h != (_h + 1) * blockSize and h < height:
+                        w = (_w * blockSize)
+                        while w != (_w + 1) * blockSize and w < width:
+                            pixelAccess[w, h] = pixels[i]
+                            i += 1
+                            w += 1
+                        h += 1
 
-        img.save(path + baseName + ('_' * picCount) + '.png', 'PNG')
+        img.save(os.path.join(path, baseName + ('_' * picCount) + '.png'))
         picCount += 1
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Extract png files from Clash Royale "*_tex.sc" files')
+
+def check_header(data):
+    if data[0] == 0x5d:
+        return 'csv'
+    if data[:2] == b'\x53\x43':
+        return 'sc'
+    raise Exception('Unknown file type')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Extract png files from Clash'
+                                                 ' Royale \'*_tex.sc\' files')
     parser.add_argument('files', help='sc file', nargs='+')
+    parser.add_argument('--old', action='store_true',
+                        help='used for \'*_dl.sc\' files')
     parser.add_argument('-o', help='Extract pngs to directory', type=str)
     args = parser.parse_args()
 
     if args.o:
-        path = os.path.normpath(args.o) + '/'
+        path = os.path.normpath(args.o)
     else:
-        path = os.path.dirname(os.path.realpath(__file__)) + '/'
+        path = os.path.dirname(os.path.realpath(__file__))
 
     for file in args.files:
-        if file.endswith('_tex.sc'):
+        try:
             baseName, ext = os.path.splitext(os.path.basename(file))
             with open(file, 'rb') as f:
-                print('{}'.format(f.name))
+                print(f.name)
                 data = f.read()
-                process_sc(baseName, data[26:], path)
-        else:
-            print('{} not supported.'.format(file))
+
+            type = check_header(data)
+
+            if type == 'csv':
+                process_csv(baseName + ext, data, path)
+            elif type == 'sc':
+                process_sc(baseName, data, path, args.old)
+        except Exception as e:
+            print('{} {}'.format(e.__class__.__name__, e))
