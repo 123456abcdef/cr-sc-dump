@@ -1,25 +1,12 @@
+#!/usr/bin/env python3
+
 import argparse
 import hashlib
 import io
 import lzma
-from math import ceil
 import os
 
 from PIL import Image
-
-"""
-Tool for extracting Clash Royale "*.sc" files
-
-Download .apk from the net and extract with 7zip.
-
-Linux / Mac:
-find ./assets/sc -name "*.sc" | xargs python dumpsc.py
-
-Windows:
-for %v in (*.sc) do dumpsc.py %v
-
-Will save all png files.
-"""
 
 
 class Reader(io.BytesIO):
@@ -35,71 +22,91 @@ class Reader(io.BytesIO):
         return super().read(size)
 
     def read_byte(self):
-        self._bytes_left -= 1
         return int.from_bytes(self.read(1), "little")
 
     def read_uint16(self):
-        self._bytes_left -= 2
         return int.from_bytes(self.read(2), "little")
 
     def read_uint32(self):
-        self._bytes_left -= 4
         return int.from_bytes(self.read(4), "little")
 
     def read_string(self):
         length = self.read_byte()
-        self._bytes_left -= 1 + length
         return self.read(length).decode("utf-8")
 
 
 def decompress(data):
-    # Fix header and decompress
-    data = data[0:9] + (b"\x00" * 4) + data[9:]
-    return lzma.LZMADecompressor().decompress(data)
+    if data[:4] == b"SCLZ":
+        # Credits: https://github.com/Galaxy1036/pylzham
+        import lzham
+
+        dict_size = int.from_bytes(data[4:5], byteorder="big")
+        uncompressed_size = int.from_bytes(data[5:9], byteorder="little")
+        decompressed = lzham.decompress(
+            data[9:], uncompressed_size, {"dict_size_log2": dict_size}
+        )
+    else:
+        data = data[0:9] + (b"\x00" * 4) + data[9:]
+        decompressed = lzma.LZMADecompressor().decompress(data)
+    return decompressed
 
 
 def process_csv(file_name, data, path):
     decompressed = decompress(data)
-
     with open(os.path.join(path, file_name), "wb") as f:
         f.write(decompressed)
 
 
-def convert_pixel(reader, sub_type):
+def create_image(width, height, pixels, sub_type):
     if sub_type == 0 or sub_type == 1:  # RGB8888
-        pixel = reader.read(4)
-        return (int(pixel[0]), int(pixel[1]), int(pixel[2]), int(pixel[3]))
-    elif sub_type == 2:  # RGB4444
-        pixel = reader.read_uint16()
-        return (
-            ((pixel >> 12) & 0xF) << 4,
-            ((pixel >> 8) & 0xF) << 4,
-            ((pixel >> 4) & 0xF) << 4,
-            ((pixel >> 0) & 0xF) << 4,
-        )
+        return Image.frombytes("RGBA", (width, height), pixels, "raw")
+    elif sub_type == 2:  # RGBA4444
+        img = Image.new("RGBA", (width, height))
+        ps = img.load()
+        for h in range(height):
+            for w in range(width):
+                i = (w + h * width) * 2
+                p = int.from_bytes(pixels[i : i + 2], "little")
+                ps[w, h] = (
+                    ((p >> 12) & 0xF) << 4,
+                    ((p >> 8) & 0xF) << 4,
+                    ((p >> 4) & 0xF) << 4,
+                    ((p >> 0) & 0xF) << 4,
+                )
+        return img
     elif sub_type == 3:  # RBGA5551
-        pixel = reader.read_uint16()
-        return (
-            ((pixel >> 11) & 0x1F) << 3,
-            ((pixel >> 6) & 0x1F) << 3,
-            ((pixel >> 1) & 0x1F) << 3,
-            ((pixel) & 0xFF) << 7,
-        )
+        args = ("RGBA;4B", 0, 0)
+        return Image.frombytes("RGBA", (width, height), pixels, "raw", args)
     elif sub_type == 4:  # RGB565
-        pixel = reader.read_uint16()
-        return (
-            ((pixel >> 11) & 0x1F) << 3,
-            ((pixel >> 5) & 0x3F) << 2,
-            (pixel & 0x1F) << 3,
-        )
+        img = Image.new("RGB", (width, height))
+        ps = img.load()
+        for h in range(height):
+            for w in range(width):
+                i = (w + h * width) * 2
+                p = int.from_bytes(pixels[i : i + 2], "little")
+                ps[w, h] = (
+                    ((p >> 11) & 0x1F) << 3,
+                    ((p >> 5) & 0x3F) << 2,
+                    (p & 0x1F) << 3,
+                )
+        return img
     elif sub_type == 6:  # LA88
-        pixel = reader.read_uint16()
-        return ((pixel >> 8), (pixel >> 8), (pixel >> 8), (pixel & 0xFF))
+        return Image.frombytes("LA", (width, height), pixels)
     elif sub_type == 10:  # L8
-        pixel = reader.read_byte()
-        return (pixel, pixel, pixel)
+        return Image.frombytes("L", (width, height), pixels)
     else:
-        raise Exception("Unknown pixel sub type '{}'".format(sub_type))
+        raise Exception(f"Unknown sub type '{sub_type}'")
+
+
+def pixel_size(sub_type):
+    if sub_type in [0, 1]:
+        return 4
+    elif sub_type in [2, 3, 4, 6]:
+        return 2
+    elif sub_type in [10]:
+        return 1
+    else:
+        raise Exception(f"Unknown sub type '{sub_type}'")
 
 
 def process_sc(base_name, data, path, old):
@@ -119,13 +126,13 @@ def process_sc(base_name, data, path, old):
         for i in range(count):  # skip strings
             reader.read_string()
 
-    pic_count = 0
+    count = 0
     while len(reader):
         file_type = reader.read_byte()
         file_size = reader.read_uint32()
 
         if file_type not in [1, 24, 27, 28]:
-            reader.read(file_size)
+            data = reader.read(file_size)
             continue
 
         sub_type = reader.read_byte()
@@ -133,35 +140,27 @@ def process_sc(base_name, data, path, old):
         height = reader.read_uint16()
 
         print(
-            f"file_type: {file_type}, file_size: {file_size}, "
+            f"  file_type: {file_type}, file_size: {file_size}, "
             f"sub_type: {sub_type}, width: {width}, height: {height}"
         )
 
-        pixels = []
-        for y in range(height):
-            for x in range(width):
-                pixels.append(convert_pixel(reader, sub_type))
-
-        img = Image.new("RGBA", (width, height))
-        img.putdata(pixels)
-
         if file_type == 27 or file_type == 28:
-            _pixels = img.load()
-            i = 0
-            block_size = 32
-            for _h in range(ceil(height / block_size)):
-                for _w in range(ceil(width / block_size)):
-                    h = _h * block_size
-                    while h != (_h + 1) * block_size and h < height:
-                        w = _w * block_size
-                        while w != (_w + 1) * block_size and w < width:
-                            _pixels[w, h] = pixels[i]
-                            i += 1
-                            w += 1
-                        h += 1
+            pixel_sz = pixel_size(sub_type)
+            block_sz = 32
+            pixels = bytearray(file_size - 5)
+            for _h in range(0, height, block_sz):
+                for _w in range(0, width, block_sz):
+                    for h in range(_h, min(_h + block_sz, height)):
+                        i = (_w + h * width) * pixel_sz
+                        sz = min(block_sz, width - _w) * pixel_sz
+                        pixels[i : i + sz] = reader.read(sz)
+            pixels = bytes(pixels)
+        else:
+            pixels = reader.read(file_size - 5)
 
-        img.save(os.path.join(path, base_name + ("_" * pic_count) + ".png"))
-        pic_count += 1
+        img = create_image(width, height, pixels, sub_type)
+        img.save(os.path.join(path, f"{base_name}_{count}.png"))
+        count += 1
 
 
 def check_header(data):
@@ -169,7 +168,7 @@ def check_header(data):
         return "csv"
     if data[:2] == b"\x53\x43":
         return "sc"
-    raise Exception("Unknown file type")
+    raise Exception("  Unknown header")
 
 
 if __name__ == "__main__":
@@ -193,11 +192,11 @@ if __name__ == "__main__":
                 print(f.name)
                 data = f.read()
 
-            sub_type = check_header(data)
+            file_type = check_header(data)
 
-            if sub_type == "csv":
+            if file_type == "csv":
                 process_csv(base_name + ext, data, path)
-            elif sub_type == "sc":
+            elif file_type == "sc":
                 process_sc(base_name, data, path, args.old)
         except Exception as e:
             print(f"{e.__class__.__name__} {e}")

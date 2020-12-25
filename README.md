@@ -1,30 +1,40 @@
 # cr-sc-dump
-Python script to extract pngs from Clash Royale's `*.sc` files.
+Python script to extract pngs from Supercell’s `*.sc`, `*_dl.sc`, `*_tex.sc`, or `*.csv` files.
 
 ## Installation
-1. Install `Python 3`
-2. Pip install `Pillow`
-3. Download `dumpsc.py`
+```console
+pip install -r requirements.txt
+```
+Optional: If you want to use `dumpsc.py` inside a contianer
+```console
+docker build --pull -t dumpsc .
+```
 
 ## Usage
-Download [Clash Royale APK](https://apkpure.com/clash-royale/com.supercell.clashroyale), unzip and navigate to `path_cr_apk/assets/sc/`.
+Download [Clash Royale APK](https://apkpure.com/clash-royale/com.supercell.clashroyale), unzip and navigate to `path/to/assets/sc/`.
+Works the same for any other Supercell game.
 
-Or pull `/data/data/com.supercell.clashroyale/update` from your rooted Android device.
+Or pull `/data/data/com.supercell.clashroyale/update/` from your rooted Android device.
 
 To extract pngs from files ending with `_tex.sc` try
-
-    python dumpsc.py /path/to/filename_tex.sc
-
+```console
+python dumpsc.py path/to/filename_tex.sc
+```
 To extract pngs from files ending with `.sc` or `_dl.sc` try
-
-    python dumpsc.py /path/to/filename_dl.sc --old
-
+```console
+python dumpsc.py path/to/filename_dl.sc --old
+```
 To decompress files ending with `.csv` try
+```console
+python dumpsc.py path/to/filename.csv
+```
+Here an example on how to use the contianer
+```console
+docker run --rm -it --volume "$PWD":/data --user="$(id -u):$(id -g)" dumpsc <*_tex.sc>
+```
 
-    python dumpsc.py /path/to/filename.csv
-
-
-If you want to get single sprites from the extracted pngs try  [sc_decode](https://github.com/Galaxy1036/sc_decode).
+## Additional Links
+- [Galaxy1036/sc_decode](https://github.com/Galaxy1036/sc_decode)
 
 
 ## Credits
