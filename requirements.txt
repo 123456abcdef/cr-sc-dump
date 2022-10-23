@@ -1,2 +1,3 @@
 Pillow
 pylzham
+zstandard

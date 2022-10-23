@@ -3,10 +3,12 @@
 import argparse
 import hashlib
 import io
+import logging
 import lzma
 import os
 
 from PIL import Image
+import zstandard
 
 
 class Reader(io.BytesIO):
@@ -36,17 +38,43 @@ class Reader(io.BytesIO):
 
 
 def decompress(data):
-    if data[:4] == b"SCLZ":
+    if data[0:4] == b"SCLZ":
+        logging.debug("Decompressing using LZHAM ...")
         # Credits: https://github.com/Galaxy1036/pylzham
         import lzham
 
         dict_size = int.from_bytes(data[4:5], byteorder="big")
         uncompressed_size = int.from_bytes(data[5:9], byteorder="little")
+
+        logging.debug(f"dict size: {dict_size}")
+        logging.debug(f"uncompressed size: {uncompressed_size}")
+
         decompressed = lzham.decompress(
             data[9:], uncompressed_size, {"dict_size_log2": dict_size}
         )
+    elif int.from_bytes(data[0:4], byteorder="little") == zstandard.MAGIC_NUMBER:
+        logging.debug("Decompressing using ZSTD ...")
+        decompressed = zstandard.decompress(data)
     else:
+        logging.debug("Decompressing using LZMA ...")
+        # fix uncompressed size to 64 bit
         data = data[0:9] + (b"\x00" * 4) + data[9:]
+
+        prop = data[0]
+        if prop > (4 * 5 + 4) * 9 + 8:
+            raise Exception("LZMA properties error")
+        pb = int(prop / (9 * 5))
+        prop -= int(pb * 9 * 5)
+        lp = int(prop / 9)
+        lc = int(prop - lp * 9)
+        logging.debug(f"literal context bits: {lc}")
+        logging.debug(f"literal position bits: {lp}")
+        logging.debug(f"position bits: {pb}")
+        dictionary_size = int.from_bytes(data[1:5], byteorder="little")
+        logging.debug(f"dictionary size: {dictionary_size}")
+        uncompressed_size = int.from_bytes(data[5:13], byteorder="little")
+        logging.debug(f"uncompressed size: {uncompressed_size}")
+
         decompressed = lzma.LZMADecompressor().decompress(data)
     return decompressed
 
@@ -110,11 +138,17 @@ def pixel_size(sub_type):
 
 
 def process_sc(base_name, data, path, old):
-    decompressed = decompress(data[26:])
+    file_ver_major = int.from_bytes(data[2:6], byteorder="big")
+    file_ver_minor = int.from_bytes(data[6:10], byteorder="big")
+    hash_length = int.from_bytes(data[10:14], byteorder="big")
+    logging.debug(f"sc file version: {file_ver_major}.{file_ver_minor}")
+    md5_hash = data[14 : 14 + hash_length]
+    logging.debug(f"md5 hash: {md5_hash.hex()}")
 
-    md5_hash = data[10:26]
+    decompressed = decompress(data[14 + hash_length :])
+
     if hashlib.md5(decompressed).digest() != md5_hash:
-        raise Exception("File seems corrupted")
+        logging.debug("File seems corrupted")
 
     reader = Reader(decompressed)
 
@@ -139,8 +173,8 @@ def process_sc(base_name, data, path, old):
         width = reader.read_uint16()
         height = reader.read_uint16()
 
-        print(
-            f"  file_type: {file_type}, file_size: {file_size}, "
+        logging.info(
+            f"file_type: {file_type}, file_size: {file_size}, "
             f"sub_type: {sub_type}, width: {width}, height: {height}"
         )
 
@@ -183,13 +217,15 @@ if __name__ == "__main__":
     if args.o:
         path = os.path.normpath(args.o)
     else:
-        path = os.path.dirname(os.path.realpath(__file__))
+        path = os.getcwd()
+
+    logging.basicConfig(format="", level=logging.INFO)
 
     for file in args.files:
         try:
             base_name, ext = os.path.splitext(os.path.basename(file))
+            logging.info(base_name + ext)
             with open(file, "rb") as f:
-                print(f.name)
                 data = f.read()
 
             file_type = check_header(data)
@@ -199,4 +235,4 @@ if __name__ == "__main__":
             elif file_type == "sc":
                 process_sc(base_name, data, path, args.old)
         except Exception as e:
-            print(f"{e.__class__.__name__} {e}")
+            logging.error(f"{e.__class__.__name__} {e}")
