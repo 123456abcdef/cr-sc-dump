@@ -202,16 +202,17 @@ def check_header(data):
         return "csv"
     if data[:2] == b"\x53\x43":
         return "sc"
+    if data[:4] == b"\x53\x69\x67\x3a":
+        return "sig:"
     raise Exception("  Unknown header")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Extract png files from Clash" " Royale '*_tex.sc' files"
-    )
+    parser = argparse.ArgumentParser(description="Extract png files from SC/CSV files")
     parser.add_argument("files", help="sc file", nargs="+")
     parser.add_argument("--old", action="store_true", help="used for '*_dl.sc' files")
     parser.add_argument("-o", help="Extract pngs to directory", type=str)
+    parser.add_argument("--verbose", action="store_true", help="Print debug infos")
     args = parser.parse_args()
 
     if args.o:
@@ -219,7 +220,8 @@ if __name__ == "__main__":
     else:
         path = os.getcwd()
 
-    logging.basicConfig(format="", level=logging.INFO)
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(format="", level=level)
 
     for file in args.files:
         try:
@@ -232,6 +234,8 @@ if __name__ == "__main__":
 
             if file_type == "csv":
                 process_csv(base_name + ext, data, path)
+            elif file_type == "sig:":
+                process_csv(base_name + ext, data[68:], path)
             elif file_type == "sc":
                 process_sc(base_name, data, path, args.old)
         except Exception as e:
