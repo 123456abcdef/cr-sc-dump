@@ -52,7 +52,7 @@ def decompress(data):
         decompressed = lzham.decompress(
             data[9:], uncompressed_size, {"dict_size_log2": dict_size}
         )
-    elif int.from_bytes(data[0:4], byteorder="little") == zstandard.MAGIC_NUMBER:
+    elif int.from_bytes(data[0:4], byteorder="little") == 0xfd2fb528:
         logging.debug("Decompressing using ZSTD ...")
         decompressed = zstandard.decompress(data)
     else:
