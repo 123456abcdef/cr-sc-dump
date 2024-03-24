@@ -8,6 +8,7 @@ import lzma
 import os
 
 from PIL import Image
+import texture2ddecoder
 import zstandard
 
 
@@ -19,20 +20,23 @@ class Reader(io.BytesIO):
     def __len__(self):
         return 0 if self._bytes_left < 0 else self._bytes_left
 
-    def read(self, size):
-        self._bytes_left -= size
+    def read(self, size=-1):
+        if size == -1:
+            self._bytes_left = 0
+        else:
+            self._bytes_left -= size
         return super().read(size)
 
-    def read_byte(self):
-        return int.from_bytes(self.read(1), "little")
+    def read_byte(self, byteorder="little"):
+        return int.from_bytes(self.read(1), byteorder)
 
-    def read_uint16(self):
-        return int.from_bytes(self.read(2), "little")
+    def read_uint16(self, byteorder="little"):
+        return int.from_bytes(self.read(2), byteorder)
 
-    def read_uint32(self):
-        return int.from_bytes(self.read(4), "little")
+    def read_uint32(self, byteorder="little"):
+        return int.from_bytes(self.read(4), byteorder)
 
-    def read_string(self):
+    def read_string(self, encoding="utf-8"):
         length = self.read_byte()
         return self.read(length).decode("utf-8")
 
@@ -52,7 +56,7 @@ def decompress(data):
         decompressed = lzham.decompress(
             data[9:], uncompressed_size, {"dict_size_log2": dict_size}
         )
-    elif int.from_bytes(data[0:4], byteorder="little") == 0xfd2fb528:
+    elif data[0:4] == zstandard.FRAME_HEADER:
         logging.debug("Decompressing using ZSTD ...")
         decompressed = zstandard.decompress(data)
     else:
@@ -136,16 +140,70 @@ def pixel_size(sub_type):
     else:
         raise Exception(f"Unknown sub type '{sub_type}'")
 
+def process_ktx(reader):
+    identifier = reader.read(12)
+    endianness = reader.read_uint32()
+    gl_type = reader.read_uint32()
+    gl_type_size = reader.read_uint32()
+    gl_format = reader.read_uint32()
+    gl_internal_format = reader.read_uint32()
+    gl_base_internal_format = reader.read_uint32()
+    pixel_width = reader.read_uint32()
+    pixel_height = reader.read_uint32()
+    pixel_depth = reader.read_uint32()
+    number_of_array_elements = reader.read_uint32()
+    number_of_array_elements = reader.read_uint32()
+    number_of_mipmap_levels = reader.read_uint32()
+    bytes_of_key_value_data = reader.read_uint32()
+    reader.read(bytes_of_key_value_data)
+    image_size = reader.read_uint32()
+    logging.debug(
+        f"identifier: {identifier[1:7]}, endianness: 0x{endianness:02x}, gl_type: {gl_type}, gl_type_size: {gl_type_size}, gl_format: {gl_format}, gl_internal_format : 0x{gl_internal_format:02x}, gl_base_internal_format: 0x{gl_base_internal_format:02x}, pixel_width: {pixel_width}, pixel_height: {pixel_height}, pixel_depth: {pixel_depth}, number_of_array_elements: {number_of_array_elements}, number_of_array_elements: {number_of_array_elements}, number_of_mipmap_levels: {number_of_mipmap_levels}, bytes_of_key_value_data: {bytes_of_key_value_data}, image_size: {image_size}"
+    )
+    # https://github.com/google/fplbase/blob/master/include/fplbase/glplatform.h
+    if gl_internal_format == 0x93B0:
+        block_width = block_height = 4
+    elif gl_internal_format == 0x93B4:
+        block_width = block_height = 6
+    elif gl_internal_format == 0x93B7:
+        block_width = block_height = 8
+    else:
+        logging.error(f"Unknown gl_internal_format: 0x{gl_internal_format:02x}")
+        reader.read(image_size)
+        return None
 
-def process_sc(base_name, data, path, old):
-    file_ver_major = int.from_bytes(data[2:6], byteorder="big")
-    file_ver_minor = int.from_bytes(data[6:10], byteorder="big")
-    hash_length = int.from_bytes(data[10:14], byteorder="big")
+    pixels = texture2ddecoder.decode_astc(
+        reader.read(image_size),
+        pixel_width,
+        pixel_height,
+        block_width,
+        block_height,
+    )
+    img = Image.frombytes(
+        "RGBA", (pixel_width, pixel_height), pixels, "raw", "BGRA"
+    )
+    return img
+
+
+def process_file_type_47(file_path):
+    logging.info(f"{os.path.basename(file_path)}")
+    with open(file_path, "rb") as f:
+        data = f.read()
+    decompressed = decompress(data)
+    return process_ktx(Reader(decompressed))
+
+
+def process_sc(base_dir, base_name, data, path, old):
+    reader = Reader(data)
+    reader.read(2)
+    file_ver_major = reader.read_uint32(byteorder="big")
+    file_ver_minor = reader.read_uint32(byteorder="big")
+    hash_length = reader.read_uint32(byteorder="big")
     logging.debug(f"sc file version: {file_ver_major}.{file_ver_minor}")
-    md5_hash = data[14 : 14 + hash_length]
+    md5_hash = reader.read(hash_length)
     logging.debug(f"md5 hash: {md5_hash.hex()}")
 
-    decompressed = decompress(data[14 + hash_length :])
+    decompressed = decompress(reader.read())
 
     if hashlib.md5(decompressed).digest() != md5_hash:
         logging.debug("File seems corrupted")
@@ -165,9 +223,19 @@ def process_sc(base_name, data, path, old):
         file_type = reader.read_byte()
         file_size = reader.read_uint32()
 
-        if file_type not in [1, 24, 27, 28]:
+        if file_size == 0:
+            continue
+
+        if file_type not in [1, 24, 27, 28, 45, 47]:
+            logging.error(f"Unknown file_type: {file_type}")
             data = reader.read(file_size)
             continue
+
+        if file_type == 45:
+            file_size = reader.read_uint32()
+
+        if file_type == 47:
+            file_name = reader.read_string()
 
         sub_type = reader.read_byte()
         width = reader.read_uint16()
@@ -178,6 +246,7 @@ def process_sc(base_name, data, path, old):
             f"sub_type: {sub_type}, width: {width}, height: {height}"
         )
 
+        img = None
         if file_type == 27 or file_type == 28:
             pixel_sz = pixel_size(sub_type)
             block_sz = 32
@@ -189,10 +258,15 @@ def process_sc(base_name, data, path, old):
                         sz = min(block_sz, width - _w) * pixel_sz
                         pixels[i : i + sz] = reader.read(sz)
             pixels = bytes(pixels)
+            img = create_image(width, height, pixels, sub_type)
+        elif file_type == 45:
+            img = process_ktx(reader)
+        elif file_type == 47:
+            img = process_file_type_47(os.path.join(base_dir, file_name))
         else:
             pixels = reader.read(file_size - 5)
+            img = create_image(width, height, pixels, sub_type)
 
-        img = create_image(width, height, pixels, sub_type)
         img.save(os.path.join(path, f"{base_name}_{count}.png"))
         count += 1
 
@@ -225,6 +299,7 @@ if __name__ == "__main__":
 
     for file in args.files:
         try:
+            base_dir = os.path.dirname(file)
             base_name, ext = os.path.splitext(os.path.basename(file))
             logging.info(base_name + ext)
             with open(file, "rb") as f:
@@ -237,6 +312,6 @@ if __name__ == "__main__":
             elif file_type == "sig:":
                 process_csv(base_name + ext, data[68:], path)
             elif file_type == "sc":
-                process_sc(base_name, data, path, args.old)
+                process_sc(base_dir, base_name, data, path, args.old)
         except Exception as e:
             logging.error(f"{e.__class__.__name__} {e}")
