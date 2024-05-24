@@ -5,7 +5,7 @@ Python script to extract pngs from Supercell’s `*.sc`, `*_dl.sc`, `*_tex.sc`, 
 ```console
 pip install -r requirements.txt
 ```
-Optional: If you want to use `dumpsc.py` inside a contianer
+Optional: If you want to use `dumpsc.py` inside a container
 ```console
 docker build --pull -t dumpsc .
 ```
