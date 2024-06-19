@@ -33,6 +33,9 @@ class Reader(io.BytesIO):
     def read_uint16(self, byteorder="little"):
         return int.from_bytes(self.read(2), byteorder)
 
+    def read_int32(self, byteorder="little"):
+        return int.from_bytes(self.read(4), byteorder, signed=True)
+
     def read_uint32(self, byteorder="little"):
         return int.from_bytes(self.read(4), byteorder)
 
@@ -140,47 +143,26 @@ def pixel_size(sub_type):
     else:
         raise Exception(f"Unknown sub type '{sub_type}'")
 
-def process_ktx(reader):
-    identifier = reader.read(12)
-    endianness = reader.read_uint32()
-    gl_type = reader.read_uint32()
-    gl_type_size = reader.read_uint32()
-    gl_format = reader.read_uint32()
-    gl_internal_format = reader.read_uint32()
-    gl_base_internal_format = reader.read_uint32()
-    pixel_width = reader.read_uint32()
-    pixel_height = reader.read_uint32()
-    pixel_depth = reader.read_uint32()
-    number_of_array_elements = reader.read_uint32()
-    number_of_array_elements = reader.read_uint32()
-    number_of_mipmap_levels = reader.read_uint32()
-    bytes_of_key_value_data = reader.read_uint32()
-    reader.read(bytes_of_key_value_data)
-    image_size = reader.read_uint32()
-    logging.debug(
-        f"identifier: {identifier[1:7]}, endianness: 0x{endianness:02x}, gl_type: {gl_type}, gl_type_size: {gl_type_size}, gl_format: {gl_format}, gl_internal_format : 0x{gl_internal_format:02x}, gl_base_internal_format: 0x{gl_base_internal_format:02x}, pixel_width: {pixel_width}, pixel_height: {pixel_height}, pixel_depth: {pixel_depth}, number_of_array_elements: {number_of_array_elements}, number_of_array_elements: {number_of_array_elements}, number_of_mipmap_levels: {number_of_mipmap_levels}, bytes_of_key_value_data: {bytes_of_key_value_data}, image_size: {image_size}"
-    )
-    # https://github.com/google/fplbase/blob/master/include/fplbase/glplatform.h
-    if gl_internal_format == 0x93B0:
-        block_width = block_height = 4
-    elif gl_internal_format == 0x93B4:
-        block_width = block_height = 6
-    elif gl_internal_format == 0x93B7:
-        block_width = block_height = 8
-    else:
-        logging.error(f"Unknown gl_internal_format: 0x{gl_internal_format:02x}")
-        reader.read(image_size)
-        return None
 
+def process_sctx(reader):
+    reader.read(12) # magic
+    reader.read(40)
+    width = reader.read_uint16()
+    height = reader.read_uint16()
+    reader.read(24)
+    reader.read(reader.read_uint32())
+    reader.read(52)
+    decompressed = decompress(reader.read())
+    block_width = block_height = 8
     pixels = texture2ddecoder.decode_astc(
-        reader.read(image_size),
-        pixel_width,
-        pixel_height,
+        decompressed,
+        width,
+        height,
         block_width,
         block_height,
     )
     img = Image.frombytes(
-        "RGBA", (pixel_width, pixel_height), pixels, "raw", "BGRA"
+        "RGBA", (width, height), pixels, "raw", "BGRA"
     )
     return img
 
@@ -189,8 +171,7 @@ def process_file_type_47(file_path):
     logging.info(f"{os.path.basename(file_path)}")
     with open(file_path, "rb") as f:
         data = f.read()
-    decompressed = decompress(data)
-    return process_ktx(Reader(decompressed))
+    return process_sctx(Reader(data))
 
 
 def process_sc(base_dir, base_name, data, path, old):
@@ -226,8 +207,16 @@ def process_sc(base_dir, base_name, data, path, old):
         if file_size == 0:
             continue
 
-        if file_type not in [1, 24, 27, 28, 45, 47]:
+        if file_type not in [1, 8, 12, 24, 27, 28, 45, 47, 49]:
             logging.error(f"Unknown file_type: {file_type}")
+            data = reader.read(file_size)
+            continue
+
+        if file_type == 8:
+            matrix = [reader.read_int32() for _ in range(6)]
+            continue
+
+        if file_type == 12:
             data = reader.read(file_size)
             continue
 
@@ -236,6 +225,10 @@ def process_sc(base_dir, base_name, data, path, old):
 
         if file_type == 47:
             file_name = reader.read_string()
+
+        if file_type == 49:
+            data = reader.read(file_size)
+            continue
 
         sub_type = reader.read_byte()
         width = reader.read_uint16()
@@ -260,7 +253,7 @@ def process_sc(base_dir, base_name, data, path, old):
             pixels = bytes(pixels)
             img = create_image(width, height, pixels, sub_type)
         elif file_type == 45:
-            img = process_ktx(reader)
+            img = process_sctx(reader)
         elif file_type == 47:
             img = process_file_type_47(os.path.join(base_dir, file_name))
         else:
