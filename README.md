@@ -1,5 +1,5 @@
 # cr-sc-dump
-Python script to extract pngs from Supercell’s `*.sc`, `*_dl.sc`, `*_tex.sc`, or `*.csv` files.
+Python script to extract pngs from Supercell’s `*.sc`, `*_dl.sc`, `*_tex.sc`, `*.csv`, `*.ktx`, and `*.sctx` files.
 
 ## Installation
 ```console

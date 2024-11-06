@@ -16,15 +16,21 @@ class Reader(io.BytesIO):
     def __init__(self, stream):
         super().__init__(stream)
         self._bytes_left = len(stream)
+        self._bytes_read = 0
 
     def __len__(self):
         return 0 if self._bytes_left < 0 else self._bytes_left
 
+    def align_to(self, alignment):
+        self.read(self._bytes_read % alignment)
+
     def read(self, size=-1):
         if size == -1:
+            self._bytes_read += self._bytes_left
             self._bytes_left = 0
         else:
             self._bytes_left -= size
+            self._bytes_read += size
         return super().read(size)
 
     def read_byte(self, byteorder="little"):
@@ -38,6 +44,9 @@ class Reader(io.BytesIO):
 
     def read_uint32(self, byteorder="little"):
         return int.from_bytes(self.read(4), byteorder)
+
+    def read_uint64(self, byteorder="little"):
+        return int.from_bytes(self.read(8), byteorder)
 
     def read_string(self, encoding="utf-8"):
         length = self.read_byte()
@@ -144,34 +153,127 @@ def pixel_size(sub_type):
         raise Exception(f"Unknown sub type '{sub_type}'")
 
 
-def process_sctx(reader):
-    reader.read(12) # magic
-    reader.read(40)
+def process_sctx(base_name, data, path):
+    reader = Reader(data)
+    reader.read(52)
     width = reader.read_uint16()
     height = reader.read_uint16()
-    reader.read(24)
+    file_type = reader.read_uint32()
+    length = reader.read_uint32()
+    reader.read(16)
     reader.read(reader.read_uint32())
     reader.read(52)
-    decompressed = decompress(reader.read())
-    block_width = block_height = 8
+    logging.info(
+        f"file_type: {file_type}, file_size: {length}, width: {width}, height: {height}"
+    )
+
+    if file_type == 12:
+        block_width = block_height = 4
+        pixels = reader.read()
+    elif file_type == 5:
+        pixels = decompress(reader.read())
+        block_width = block_height = 8
+    else:
+        raise Exception(f"Unknown file type '{file_type}'")
+
     pixels = texture2ddecoder.decode_astc(
-        decompressed,
+        pixels,
         width,
         height,
         block_width,
         block_height,
     )
-    img = Image.frombytes(
-        "RGBA", (width, height), pixels, "raw", "BGRA"
-    )
-    return img
+    img = Image.frombytes("RGBA", (width, height), pixels, "raw", "BGRA")
+    img.save(os.path.join(path, f"{base_name}.png"))
 
 
-def process_file_type_47(file_path):
-    logging.info(f"{os.path.basename(file_path)}")
+def process_ktx(base_name, data, path):
+    reader = Reader(data)
+
+    identifier = reader.read(12)
+    if b"KTX 11" in identifier:
+        image_data, pixel_height, pixel_width, data_type = process_ktx11(reader)
+    elif b"KTX 20" in identifier:
+        image_data, pixel_height, pixel_width, data_type = process_ktx20(reader)
+    else:
+        raise Exception(f"Unknown KTX identifier '{identifier}'")
+
+    if data_type == 165:  # VK_FORMAT_ASTC_6x6_UNORM_BLOCK
+        pixels = texture2ddecoder.decode_astc(
+            image_data,
+            pixel_width,
+            pixel_height,
+            6,
+            6,
+        )
+    elif data_type == 171:  # VK_FORMAT_ASTC_8x8_UNORM_BLOCK
+        pixels = texture2ddecoder.decode_astc(
+            image_data,
+            pixel_width,
+            pixel_height,
+            8,
+            8,
+        )
+    elif data_type == 0x8D64:  # ETC1_RGB8_OES
+        pixels = texture2ddecoder.decode_etc1(image_data, pixel_width, pixel_height)
+    elif data_type == 157:  # VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+        pixels = texture2ddecoder.decode_astc(
+            image_data,
+            pixel_width,
+            pixel_height,
+            4,
+            4,
+        )
+    else:
+        raise Exception(f"Unknown data type '{data_type}'")
+
+    img = Image.frombytes("RGBA", (pixel_width, pixel_height), pixels, "raw", "BGRA")
+    img.save(os.path.join(path, f"{base_name}.png"))
+
+
+def process_ktx11(reader):
+    reader.read(16)
+    gl_internal_format = reader.read_uint32()
+    reader.read(4)
+    pixel_width = reader.read_uint32()
+    pixel_height = reader.read_uint32()
+    reader.read(16)
+    reader.read(reader.read_uint32())
+    reader.read(4)
+    return reader.read(), pixel_height, pixel_width, gl_internal_format
+
+
+def process_ktx20(reader):
+    vk_format = reader.read_uint32()
+    reader.read(4)
+    pixel_width = reader.read_uint32()
+    pixel_height = reader.read_uint32()
+    reader.read(12)
+    level_count = reader.read_uint32()
+    reader.read(4)
+    # index
+    reader.read(8)
+    kvd_byte_offset = reader.read_uint32()
+    kvd_byte_length = reader.read_uint32()
+    reader.read(16)
+    # level index
+    for _ in range(max(1, level_count)):
+        reader.read(24)
+    reader.read(reader.read_uint32() - 4)
+    while reader._bytes_read < kvd_byte_offset + kvd_byte_length:
+        key_and_value = reader.read(reader.read_uint32())
+        logging.debug(key_and_value.replace(b"\0", b" ").decode("ascii"))
+        reader.align_to(4)
+    reader.align_to(16)
+    return reader.read(), pixel_height, pixel_width, vk_format
+
+
+def process_file_type_47(file_path, path):
+    base_name = os.path.basename(file_path)
+    logging.info(f"{base_name}")
     with open(file_path, "rb") as f:
         data = f.read()
-    return process_sctx(Reader(data))
+    return process_sctx(os.path.splitext(base_name)[0], data, path)
 
 
 def process_sc(base_dir, base_name, data, path, old):
@@ -253,9 +355,11 @@ def process_sc(base_dir, base_name, data, path, old):
             pixels = bytes(pixels)
             img = create_image(width, height, pixels, sub_type)
         elif file_type == 45:
-            img = process_sctx(reader)
+            process_sctx(base_name, reader.read(), path)
+            continue
         elif file_type == 47:
-            img = process_file_type_47(os.path.join(base_dir, file_name))
+            process_file_type_47(os.path.join(base_dir, file_name), path)
+            continue
         else:
             pixels = reader.read(file_size - 5)
             img = create_image(width, height, pixels, sub_type)
@@ -271,6 +375,10 @@ def check_header(data):
         return "sc"
     if data[:4] == b"\x53\x69\x67\x3a":
         return "sig:"
+    if data[:5] == b"\xab\x4b\x54\x58\x20":
+        return "ktx"
+    if data[8:12] == b"SCTX":
+        return "sctx"
     raise Exception("  Unknown header")
 
 
@@ -291,20 +399,21 @@ if __name__ == "__main__":
     logging.basicConfig(format="", level=level)
 
     for file in args.files:
-        try:
-            base_dir = os.path.dirname(file)
-            base_name, ext = os.path.splitext(os.path.basename(file))
-            logging.info(base_name + ext)
-            with open(file, "rb") as f:
-                data = f.read()
+        base_dir = os.path.dirname(file)
+        base_name, ext = os.path.splitext(os.path.basename(file))
+        logging.info(base_name + ext)
+        with open(file, "rb") as f:
+            data = f.read()
 
-            file_type = check_header(data)
+        file_type = check_header(data)
 
-            if file_type == "csv":
-                process_csv(base_name + ext, data, path)
-            elif file_type == "sig:":
-                process_csv(base_name + ext, data[68:], path)
-            elif file_type == "sc":
-                process_sc(base_dir, base_name, data, path, args.old)
-        except Exception as e:
-            logging.error(f"{e.__class__.__name__} {e}")
+        if file_type == "csv":
+            process_csv(base_name + ext, data, path)
+        elif file_type == "sig:":
+            process_csv(base_name + ext, data[68:], path)
+        elif file_type == "sc":
+            process_sc(base_dir, base_name, data, path, args.old)
+        elif file_type == "ktx":
+            process_ktx(base_name, data, path)
+        elif file_type == "sctx":
+            process_sctx(base_name, data, path)
