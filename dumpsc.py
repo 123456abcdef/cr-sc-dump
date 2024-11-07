@@ -22,7 +22,8 @@ class Reader(io.BytesIO):
         return 0 if self._bytes_left < 0 else self._bytes_left
 
     def align_to(self, alignment):
-        self.read(self._bytes_read % alignment)
+        remainder = alignment - (self._bytes_read % alignment)
+        self.read(remainder if remainder != alignment else 0)
 
     def read(self, size=-1):
         if size == -1:
@@ -192,42 +193,61 @@ def process_ktx(base_name, data, path):
 
     identifier = reader.read(12)
     if b"KTX 11" in identifier:
-        image_data, pixel_height, pixel_width, data_type = process_ktx11(reader)
+        image_data, height, width, file_type = process_ktx11(reader)
     elif b"KTX 20" in identifier:
-        image_data, pixel_height, pixel_width, data_type = process_ktx20(reader)
+        image_data, height, width, file_type = process_ktx20(reader)
     else:
         raise Exception(f"Unknown KTX identifier '{identifier}'")
 
-    if data_type == 165:  # VK_FORMAT_ASTC_6x6_UNORM_BLOCK
+    logging.info(
+        f"file_type: {file_type}, width: {width}, height: {height}"
+    )
+    if file_type == 157:  # VK_FORMAT_ASTC_4x4_UNORM_BLOCK
         pixels = texture2ddecoder.decode_astc(
             image_data,
-            pixel_width,
-            pixel_height,
+            width,
+            height,
+            4,
+            4,
+        )
+    elif file_type == 165:  # VK_FORMAT_ASTC_6x6_UNORM_BLOCK
+        pixels = texture2ddecoder.decode_astc(
+            image_data,
+            width,
+            height,
             6,
             6,
         )
-    elif data_type == 171:  # VK_FORMAT_ASTC_8x8_UNORM_BLOCK
+    elif file_type in [171, 172]:  # VK_FORMAT_ASTC_8x8_UNORM_BLOCK
         pixels = texture2ddecoder.decode_astc(
             image_data,
-            pixel_width,
-            pixel_height,
+            width,
+            height,
             8,
             8,
         )
-    elif data_type == 0x8D64:  # ETC1_RGB8_OES
-        pixels = texture2ddecoder.decode_etc1(image_data, pixel_width, pixel_height)
-    elif data_type == 157:  # VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+    elif file_type == 0x8D64:  # ETC1_RGB8_OES
+        pixels = texture2ddecoder.decode_etc1(image_data, width, height)
+    elif file_type == 0x93B0:  # COMPRESSED_RGBA_ASTC_4x4_KHR
         pixels = texture2ddecoder.decode_astc(
             image_data,
-            pixel_width,
-            pixel_height,
+            width,
+            height,
             4,
             4,
+        )
+    elif file_type == 0x93B4:  # COMPRESSED_RGBA_ASTC_6x6_KHR
+        pixels = texture2ddecoder.decode_astc(
+            image_data,
+            width,
+            height,
+            6,
+            6,
         )
     else:
-        raise Exception(f"Unknown data type '{data_type}'")
+        raise Exception(f"Unknown file type '{file_type}'")
 
-    img = Image.frombytes("RGBA", (pixel_width, pixel_height), pixels, "raw", "BGRA")
+    img = Image.frombytes("RGBA", (width, height), pixels, "raw", "BGRA")
     img.save(os.path.join(path, f"{base_name}.png"))
 
 
@@ -255,7 +275,9 @@ def process_ktx20(reader):
     reader.read(8)
     kvd_byte_offset = reader.read_uint32()
     kvd_byte_length = reader.read_uint32()
-    reader.read(16)
+    reader.read(4)
+    sgd_byte_length = reader.read_uint32()
+    reader.read(8)
     # level index
     for _ in range(max(1, level_count)):
         reader.read(24)
@@ -265,6 +287,7 @@ def process_ktx20(reader):
         logging.debug(key_and_value.replace(b"\0", b" ").decode("ascii"))
         reader.align_to(4)
     reader.align_to(16)
+    reader.read(sgd_byte_length)
     return reader.read(), pixel_height, pixel_width, vk_format
 
 
@@ -355,7 +378,7 @@ def process_sc(base_dir, base_name, data, path, old):
             pixels = bytes(pixels)
             img = create_image(width, height, pixels, sub_type)
         elif file_type == 45:
-            process_sctx(base_name, reader.read(), path)
+            process_ktx(base_name, reader.read(), path)
             continue
         elif file_type == 47:
             process_file_type_47(os.path.join(base_dir, file_name), path)
