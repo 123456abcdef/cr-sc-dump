@@ -156,26 +156,34 @@ def pixel_size(sub_type):
 
 def process_sctx(base_name, data, path):
     reader = Reader(data)
-    reader.read(52)
+    reader.read(48)
+    file_type = reader.read_uint32()
     width = reader.read_uint16()
     height = reader.read_uint16()
-    file_type = reader.read_uint32()
-    length = reader.read_uint32()
-    reader.read(16)
-    reader.read(reader.read_uint32())
+    some_type = reader.read_uint32()
+    reader.read(20)
+    key_value_data_size = reader.read_uint32()
+    reader.read(key_value_data_size)
     reader.read(52)
+
     logging.info(
-        f"file_type: {file_type}, file_size: {length}, width: {width}, height: {height}"
+        f"file_type: {file_type}, some_type: {some_type}, width: {width}, height: {height}"
     )
 
-    if file_type == 12:
-        block_width = block_height = 4
+    if width == 0 or height == 0:
+        logging.info("skipping")
+        return
+
+    if some_type == 12:
         pixels = reader.read()
-    elif file_type == 5:
+        block_width = block_height = 4
+    elif some_type == 5:
         pixels = decompress(reader.read())
         block_width = block_height = 8
     else:
-        raise Exception(f"Unknown file type '{file_type}'")
+        reader.read(some_type - key_value_data_size - 76)
+        pixels = decompress(reader.read())
+        block_width = block_height = 8
 
     pixels = texture2ddecoder.decode_astc(
         pixels,
@@ -184,6 +192,11 @@ def process_sctx(base_name, data, path):
         block_width,
         block_height,
     )
+
+    logging.debug(
+        f"pixels: {len(pixels)}, block_width: {block_width}, block_height: {block_height}"
+    )
+
     img = Image.frombytes("RGBA", (width, height), pixels, "raw", "BGRA")
     img.save(os.path.join(path, f"{base_name}.png"))
 
@@ -199,9 +212,7 @@ def process_ktx(base_name, data, path):
     else:
         raise Exception(f"Unknown KTX identifier '{identifier}'")
 
-    logging.info(
-        f"file_type: {file_type}, width: {width}, height: {height}"
-    )
+    logging.info(f"file_type: {file_type}, width: {width}, height: {height}")
     if file_type == 157:  # VK_FORMAT_ASTC_4x4_UNORM_BLOCK
         pixels = texture2ddecoder.decode_astc(
             image_data,
